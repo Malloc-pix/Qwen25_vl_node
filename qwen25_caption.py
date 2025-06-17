@@ -9,6 +9,8 @@ import comfy.model_management as mm
 from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor, BitsAndBytesConfig
 from qwen_vl_utils import process_vision_info
 
+import gc
+
 script_directory = os.path.dirname(os.path.abspath(__file__))
 model_directory = os.path.join(folder_paths.models_dir, "LLM")
 
@@ -44,14 +46,12 @@ class Qwen25Captioner:
             "required": {
                 "image": ("IMAGE",),
                 "model_name": ([
-                    "Qwen2.5-VL-7B-Instruct",  # 可在 models/LLM 中预下载
+                    "Qwen2.5-VL-7B-Instruct",
                     "Qwen-VL-Max",
                 ], {"default": "Qwen2.5-VL-7B-Instruct"}),
 
                 "precision": (["bf16", "fp16", "fp32"], {"default": "bf16"}),
-
-                "quant": (["16", "4", "8"], {"default": "16"}),  # 16 表示无量化
-
+                "quant": (["16", "4", "8"], {"default": "4"}),  # 默认改为 4bit 更节省显存
                 "query": ("STRING", {"multiline": True, "default": query}),
                 "cached": ("BOOLEAN", {"default": False}),
             }
@@ -62,8 +62,9 @@ class Qwen25Captioner:
     CATEGORY = "Qwen2.5-VL"
 
     def inference(self, image, model_name, precision, quant, query, cached):
+        global _processor, _model
+
         try:
-            global _processor, _model
             device = mm.get_torch_device()
 
             dtype_map = {
@@ -81,12 +82,14 @@ class Qwen25Captioner:
                         model_path,
                         torch_dtype=torch_dtype,
                         device_map="auto",
-                        trust_remote_code=True
-                    ).eval().to(device)  
+                        trust_remote_code=True,
+                        low_cpu_mem_usage=True
+                    ).eval().to(device)
                 else:
                     quant_cfg = BitsAndBytesConfig(
                         load_in_4bit=(quant == "4"),
                         load_in_8bit=(quant == "8"),
+                        llm_int8_enable_fp32_cpu_offload=True,  # 开启离线调度
                         llm_int8_threshold=6.0,
                         bnb_4bit_use_double_quant=True,
                         bnb_4bit_quant_type="nf4",
@@ -145,7 +148,10 @@ class Qwen25Captioner:
                 del _processor
                 _model = None
                 _processor = None
-            comfy.model_management.soft_empty_cache()
+                gc.collect()
+                torch.cuda.empty_cache()
+                mm.soft_empty_cache()
+
         except torch.cuda.OutOfMemoryError as e:
             mm.free_memory(mm.get_total_memory(device), device)
             mm.soft_empty_cache()
