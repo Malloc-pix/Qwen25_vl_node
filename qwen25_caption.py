@@ -161,3 +161,25 @@ class Qwen25Captioner:
             raise e
 
         return (response,)
+
+class CLIPDynamicTextEncode:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "text": ("STRING", {"multiline": False, "default": "", "forceInput": True}), 
+                "clip": ("CLIP", {"tooltip": "The CLIP model used for encoding the text."})
+            }
+        }
+    RETURN_TYPES = ("CONDITIONING",)
+    OUTPUT_TOOLTIPS = ("A conditioning containing the embedded text used to guide the diffusion model.",)
+    FUNCTION = "encode"
+
+    CATEGORY = "conditioning"
+    DESCRIPTION = "Encodes a dynamic text prompt using a CLIP model into an embedding that can be used to guide the diffusion model towards generating specific images."
+
+    def encode(self, clip, text):
+        tokens = clip.tokenize(text)
+        output = clip.encode_from_tokens(tokens, return_pooled=True, return_dict=True)
+        cond = output.pop("cond")
+        return ([[cond, output]], )
