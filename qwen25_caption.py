@@ -49,9 +49,8 @@ class Qwen25Captioner:
                     "Qwen2.5-VL-7B-Instruct",
                     "Qwen-VL-Max",
                 ], {"default": "Qwen2.5-VL-7B-Instruct"}),
-
                 "precision": (["bf16", "fp16", "fp32"], {"default": "bf16"}),
-                "quant": (["16", "4", "8"], {"default": "4"}),  # 默认改为 4bit 更节省显存
+                "quant": (["16", "4", "8"], {"default": "4"}),
                 "query": ("STRING", {"multiline": True, "default": query}),
                 "cached": ("BOOLEAN", {"default": False}),
             }
@@ -81,15 +80,14 @@ class Qwen25Captioner:
                     _model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
                         model_path,
                         torch_dtype=torch_dtype,
-                        device_map="auto",
+                        device_map={"": device},  # 明确加载到 GPU
                         trust_remote_code=True,
-                        low_cpu_mem_usage=True
-                    ).eval().to(device)
+                    ).eval()
                 else:
                     quant_cfg = BitsAndBytesConfig(
                         load_in_4bit=(quant == "4"),
                         load_in_8bit=(quant == "8"),
-                        llm_int8_enable_fp32_cpu_offload=True,  # 开启离线调度
+                        llm_int8_enable_fp32_cpu_offload=True,
                         llm_int8_threshold=6.0,
                         bnb_4bit_use_double_quant=True,
                         bnb_4bit_quant_type="nf4",
@@ -97,7 +95,7 @@ class Qwen25Captioner:
                     )
                     _model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
                         model_path,
-                        device_map="auto",
+                        #device_map="auto",
                         trust_remote_code=True,
                         quantization_config=quant_cfg,
                         low_cpu_mem_usage=True,
@@ -131,12 +129,17 @@ class Qwen25Captioner:
                 videos=video_inputs,
                 padding=True,
                 return_tensors="pt"
-            ).to(device)
+            )
+
+            # ⚠️ 将输入 tensor 明确放到主 device 上（模型默认分布式时）
+            for key in inputs:
+                if isinstance(inputs[key], torch.Tensor):
+                    inputs[key] = inputs[key].to(device)
 
             with torch.no_grad():
                 generated_ids = model.generate(**inputs, max_new_tokens=512)
                 output_texts = processor.batch_decode(
-                    generated_ids[:, inputs.input_ids.shape[1]:],
+                    generated_ids[:, inputs["input_ids"].shape[1]:],
                     skip_special_tokens=True,
                     clean_up_tokenization_spaces=False
                 )
@@ -150,7 +153,7 @@ class Qwen25Captioner:
                 _processor = None
                 gc.collect()
                 torch.cuda.empty_cache()
-                mm.soft_empty_cache()
+            mm.soft_empty_cache()
 
         except torch.cuda.OutOfMemoryError as e:
             mm.free_memory(mm.get_total_memory(device), device)
